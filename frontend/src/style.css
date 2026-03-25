@@ -375,6 +375,24 @@ textarea:disabled {
   min-width: 0;
 }
 
+.send-panel {
+  overflow: auto;
+}
+
+.media-composer {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(31, 27, 21, 0.08);
+}
+
+.media-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
 .dead-panel {
   min-height: 0;
   display: flex;
@@ -476,6 +494,47 @@ textarea:disabled {
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.event-items {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.event-item {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(245, 239, 229, 0.72);
+  border: 1px solid rgba(31, 27, 21, 0.06);
+}
+
+.event-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.event-item-line {
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.muted-text {
+  color: var(--muted);
+}
+
+.code-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(31, 27, 21, 0.08);
+  color: var(--text);
+  font-family: "Consolas", "SFMono-Regular", monospace;
 }
 
 .pill {

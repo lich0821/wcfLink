@@ -41,6 +41,7 @@ export namespace main {
 	    context_token?: string;
 	    body_text?: string;
 	    raw_json: string;
+	    items?: model.EventItem[];
 	    created_at: string;
 	
 	    static createFrom(source: any = {}) {
@@ -59,8 +60,27 @@ export namespace main {
 	        this.context_token = source["context_token"];
 	        this.body_text = source["body_text"];
 	        this.raw_json = source["raw_json"];
+	        this.items = this.convertValues(source["items"], model.EventItem);
 	        this.created_at = source["created_at"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class LoginSessionView {
 	    session_id: string;
@@ -183,6 +203,32 @@ export namespace main {
 
 export namespace model {
 	
+	export class EventItem {
+	    kind: string;
+	    text?: string;
+	    file_name?: string;
+	    file_len?: string;
+	    encode_type?: number;
+	    media_encrypt_query_param?: string;
+	    media_aes_key?: string;
+	    local_path?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EventItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.text = source["text"];
+	        this.file_name = source["file_name"];
+	        this.file_len = source["file_len"];
+	        this.encode_type = source["encode_type"];
+	        this.media_encrypt_query_param = source["media_encrypt_query_param"];
+	        this.media_aes_key = source["media_aes_key"];
+	        this.local_path = source["local_path"];
+	    }
+	}
 	export class Settings {
 	    listen_addr: string;
 	    webhook_url: string;

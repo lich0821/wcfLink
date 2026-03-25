@@ -3,6 +3,8 @@
 import {main} from '../models';
 import {model} from '../models';
 
+export function ChooseMediaFile():Promise<string>;
+
 export function GetLoginQRCode(arg1:string):Promise<string>;
 
 export function GetLoginStatus(arg1:string):Promise<main.LoginSessionView>;
@@ -20,6 +22,8 @@ export function NowBJ():Promise<string>;
 export function RetryDeadLetter(arg1:number):Promise<void>;
 
 export function SaveSettings(arg1:string,arg2:string):Promise<model.Settings>;
+
+export function SendMedia(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function SendText(arg1:string,arg2:string,arg3:string):Promise<void>;
 

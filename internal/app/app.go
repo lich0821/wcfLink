@@ -20,15 +20,15 @@ import (
 )
 
 type App struct {
-	cfg     config.Config
-	logger  *slog.Logger
-	store   *store.Store
-	client  *ilink.Client
-	pollers *worker.PollerManager
+	cfg      config.Config
+	logger   *slog.Logger
+	store    *store.Store
+	client   *ilink.Client
+	pollers  *worker.PollerManager
 	webhooks *worker.WebhookDispatcher
-	server  *http.Server
-	runtime *runtimeState
-	svc     *service
+	server   *http.Server
+	runtime  *runtimeState
+	svc      *service
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
@@ -36,7 +36,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	if err != nil {
 		return nil, err
 	}
-	client := ilink.NewClient(cfg.ChannelVersion, cfg.PollTimeout+10*time.Second)
+	client := ilink.NewClient(cfg.ChannelVersion, cfg.CDNBaseURL, cfg.PollTimeout+10*time.Second)
 	runtime := newRuntimeState(st, cfg)
 	svc := &service{
 		cfg:     cfg,
@@ -50,24 +50,24 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	svc.pollers = pollers
 	svc.webhooks = webhooks
 	api := httpapi.NewServer(&service{
-		cfg:     cfg,
-		logger:  logger,
-		store:   st,
-		client:  client,
-		pollers: pollers,
+		cfg:      cfg,
+		logger:   logger,
+		store:    st,
+		client:   client,
+		pollers:  pollers,
 		webhooks: webhooks,
-		runtime: runtime,
+		runtime:  runtime,
 	}, logger)
 
 	return &App{
-		cfg:     cfg,
-		logger:  logger,
-		store:   st,
-		client:  client,
-		pollers: pollers,
+		cfg:      cfg,
+		logger:   logger,
+		store:    st,
+		client:   client,
+		pollers:  pollers,
 		webhooks: webhooks,
-		runtime: runtime,
-		svc:     svc,
+		runtime:  runtime,
+		svc:      svc,
 		server: &http.Server{
 			Addr:              cfg.ListenAddr,
 			Handler:           api.Handler(),
@@ -146,6 +146,10 @@ func (a *App) SendText(ctx context.Context, accountID, toUserID, text, contextTo
 	return a.svc.SendText(ctx, accountID, toUserID, text, contextToken)
 }
 
+func (a *App) SendMedia(ctx context.Context, accountID, toUserID, filePath, text, contextToken string) error {
+	return a.svc.SendMedia(ctx, accountID, toUserID, filePath, text, contextToken)
+}
+
 func (a *App) LogoutAccount(ctx context.Context, accountID string) error {
 	return a.svc.LogoutAccount(ctx, accountID)
 }
@@ -159,13 +163,13 @@ func (a *App) RetryDeadLetter(ctx context.Context, id int64) error {
 }
 
 type service struct {
-	cfg     config.Config
-	logger  *slog.Logger
-	store   *store.Store
-	client  *ilink.Client
-	pollers *worker.PollerManager
+	cfg      config.Config
+	logger   *slog.Logger
+	store    *store.Store
+	client   *ilink.Client
+	pollers  *worker.PollerManager
 	webhooks *worker.WebhookDispatcher
-	runtime *runtimeState
+	runtime  *runtimeState
 }
 
 func (s *service) StartLogin(ctx context.Context, baseURL string) (model.LoginSession, error) {
@@ -233,7 +237,15 @@ func (s *service) ListAccounts(ctx context.Context) ([]model.Account, error) {
 }
 
 func (s *service) ListEvents(ctx context.Context, afterID int64, limit int) ([]model.Event, error) {
-	return s.store.ListEvents(ctx, afterID, limit)
+	items, err := s.store.ListEvents(ctx, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].Items = ilink.ParseNormalizedMessageItemsFromRaw(items[i].RawJSON)
+		items[i].Items = s.enrichEventItemsWithLocalPaths(items[i].AccountID, items[i].ID, items[i].Items)
+	}
+	return items, nil
 }
 
 func (s *service) ListLogs(ctx context.Context, afterID int64, limit int) ([]model.LogEntry, error) {
@@ -287,12 +299,9 @@ func (s *service) SendText(ctx context.Context, accountID, toUserID, text, conte
 	if err != nil {
 		return err
 	}
-	if contextToken == "" {
-		if peerCtx, err := s.store.GetPeerContext(ctx, accountID, toUserID); err == nil {
-			contextToken = peerCtx.ContextToken
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
+	contextToken, err = s.resolveContextToken(ctx, accountID, toUserID, contextToken)
+	if err != nil {
+		return err
 	}
 	if strings.TrimSpace(contextToken) == "" {
 		return errors.New("context token not found for this user; current text sending only supports replying to users who have already sent a message")
@@ -309,6 +318,43 @@ func (s *service) SendText(ctx context.Context, accountID, toUserID, text, conte
 	return nil
 }
 
+func (s *service) SendMedia(ctx context.Context, accountID, toUserID, filePath, text, contextToken string) error {
+	account, err := s.store.GetAccount(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	contextToken, err = s.resolveContextToken(ctx, accountID, toUserID, contextToken)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(contextToken) == "" {
+		return errors.New("context token not found for this user; current media sending only supports replying to users who have already sent a message")
+	}
+	uploaded, msg, err := s.client.SendMediaMessage(ctx, account.BaseURL, account.Token, toUserID, contextToken, filePath, text)
+	if err != nil {
+		_ = s.store.AddLog(context.Background(), "ERROR", "outbound media send failed", "message", fmt.Sprintf(`{"account_id":%q,"to_user_id":%q,"file_path":%q,"err":%q}`, accountID, toUserID, filePath, err.Error()))
+		return err
+	}
+	rawPayload, _ := json.Marshal(msg)
+	if err := s.store.CreateOutboundMediaEvent(ctx, accountID, toUserID, contextToken, uploaded.ItemType, ilink.MediaBodyText(uploaded), string(rawPayload)); err != nil {
+		return err
+	}
+	_ = s.store.AddLog(context.Background(), "INFO", "outbound media sent", "message", fmt.Sprintf(`{"account_id":%q,"to_user_id":%q,"file_path":%q,"item_type":%q}`, accountID, toUserID, filePath, uploaded.ItemType))
+	return nil
+}
+
+func (s *service) resolveContextToken(ctx context.Context, accountID, toUserID, contextToken string) (string, error) {
+	if contextToken != "" {
+		return contextToken, nil
+	}
+	if peerCtx, err := s.store.GetPeerContext(ctx, accountID, toUserID); err == nil {
+		return peerCtx.ContextToken, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	return "", nil
+}
+
 func (s *service) HandleInboundMessage(ctx context.Context, account model.Account, msg ilink.WeixinMessage) error {
 	event, inserted, err := s.store.SaveInboundMessage(ctx, account.AccountID, msg)
 	if err != nil {
@@ -317,16 +363,19 @@ func (s *service) HandleInboundMessage(ctx context.Context, account model.Accoun
 	if !inserted {
 		return nil
 	}
+	event.Items = s.downloadInboundMedia(ctx, account, event, msg)
 
 	payload, err := json.Marshal(map[string]any{
-		"event_id":       event.ID,
-		"event_type":     event.EventType,
+		"event_id":      event.ID,
+		"event_type":    event.EventType,
 		"account_id":    account.AccountID,
 		"base_url":      account.BaseURL,
 		"from_user_id":  msg.FromUserID,
 		"to_user_id":    msg.ToUserID,
 		"message_id":    msg.MessageID,
 		"context_token": msg.ContextToken,
+		"body_text":     event.BodyText,
+		"items":         event.Items,
 		"raw_message":   msg,
 		"received_at":   time.Now().UTC(),
 	})
@@ -336,16 +385,9 @@ func (s *service) HandleInboundMessage(ctx context.Context, account model.Accoun
 
 	settings := s.runtime.Settings()
 	if settings.WebhookURL == "" {
-		text := "[non-text]"
-		for _, item := range msg.ItemList {
-			if item.Type == 1 && item.TextItem != nil && item.TextItem.Text != "" {
-				text = item.TextItem.Text
-				break
-			}
-			if item.Type == 3 && item.VoiceItem != nil && item.VoiceItem.Text != "" {
-				text = item.VoiceItem.Text
-				break
-			}
+		text := event.BodyText
+		if strings.TrimSpace(text) == "" {
+			text = "[non-text]"
 		}
 		return s.store.AddLog(ctx, "INFO", fmt.Sprintf("inbound message from %s: %s", msg.FromUserID, text), "inbound", string(payload))
 	}

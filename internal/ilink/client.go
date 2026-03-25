@@ -18,12 +18,14 @@ import (
 type Client struct {
 	httpClient     *http.Client
 	channelVersion string
+	cdnBaseURL     string
 }
 
-func NewClient(channelVersion string, timeout time.Duration) *Client {
+func NewClient(channelVersion, cdnBaseURL string, timeout time.Duration) *Client {
 	return &Client{
 		httpClient:     &http.Client{Timeout: timeout},
 		channelVersion: channelVersion,
+		cdnBaseURL:     strings.TrimRight(cdnBaseURL, "/"),
 	}
 }
 
@@ -45,13 +47,15 @@ type TextItem struct {
 }
 
 type VoiceItem struct {
-	Text       string `json:"text,omitempty"`
-	EncodeType int    `json:"encode_type,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	EncodeType int      `json:"encode_type,omitempty"`
+	Media      CDNMedia `json:"media,omitempty"`
 }
 
 type FileItem struct {
-	FileName string `json:"file_name,omitempty"`
-	Len      string `json:"len,omitempty"`
+	FileName string   `json:"file_name,omitempty"`
+	Len      string   `json:"len,omitempty"`
+	Media    CDNMedia `json:"media,omitempty"`
 }
 
 type CDNMedia struct {
@@ -60,7 +64,8 @@ type CDNMedia struct {
 }
 
 type ImageItem struct {
-	Media CDNMedia `json:"media,omitempty"`
+	Media  CDNMedia `json:"media,omitempty"`
+	AESKey string   `json:"aeskey,omitempty"`
 }
 
 type VideoItem struct {

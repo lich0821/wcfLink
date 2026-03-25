@@ -347,6 +347,16 @@ INSERT INTO events (
 	return err
 }
 
+func (s *Store) CreateOutboundMediaEvent(ctx context.Context, accountID, toUserID, contextToken, eventType, bodyText, rawJSON string) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO events (
+  account_id, direction, event_type, to_user_id, context_token, body_text, raw_json, created_at
+) VALUES (?, 'outbound', ?, ?, ?, ?, ?, ?)`,
+		accountID, eventType, toUserID, contextToken, bodyText, rawJSON, time.Now().UTC(),
+	)
+	return err
+}
+
 func (s *Store) EnqueueWebhookDelivery(ctx context.Context, event model.Event, payload []byte) error {
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
@@ -680,46 +690,11 @@ func scanWebhookDelivery(scanner interface {
 }
 
 func extractBodyText(msg ilink.WeixinMessage) string {
-	for _, item := range msg.ItemList {
-		switch item.Type {
-		case 1:
-			if item.TextItem != nil {
-				return item.TextItem.Text
-			}
-		case 3:
-			if item.VoiceItem != nil && item.VoiceItem.Text != "" {
-				return item.VoiceItem.Text
-			}
-		case 2:
-			return "[image]"
-		case 4:
-			if item.FileItem != nil && item.FileItem.FileName != "" {
-				return "[file] " + item.FileItem.FileName
-			}
-			return "[file]"
-		case 5:
-			return "[video]"
-		}
-	}
-	return ""
+	return ilink.ExtractBodyText(msg)
 }
 
 func detectEventType(msg ilink.WeixinMessage) string {
-	for _, item := range msg.ItemList {
-		switch item.Type {
-		case 1:
-			return "text"
-		case 2:
-			return "image"
-		case 3:
-			return "voice"
-		case 4:
-			return "file"
-		case 5:
-			return "video"
-		}
-	}
-	return "unknown"
+	return ilink.DetectEventType(msg)
 }
 
 func stringsNotEmpty(values ...string) bool {

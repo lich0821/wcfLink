@@ -40,17 +40,29 @@ type PeerContext struct {
 }
 
 type Event struct {
-	ID           int64     `json:"id"`
-	AccountID    string    `json:"account_id"`
-	Direction    string    `json:"direction"`
-	EventType    string    `json:"event_type"`
-	FromUserID   string    `json:"from_user_id,omitempty"`
-	ToUserID     string    `json:"to_user_id,omitempty"`
-	MessageID    int64     `json:"message_id,omitempty"`
-	ContextToken string    `json:"context_token,omitempty"`
-	BodyText     string    `json:"body_text,omitempty"`
-	RawJSON      string    `json:"raw_json"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           int64       `json:"id"`
+	AccountID    string      `json:"account_id"`
+	Direction    string      `json:"direction"`
+	EventType    string      `json:"event_type"`
+	FromUserID   string      `json:"from_user_id,omitempty"`
+	ToUserID     string      `json:"to_user_id,omitempty"`
+	MessageID    int64       `json:"message_id,omitempty"`
+	ContextToken string      `json:"context_token,omitempty"`
+	BodyText     string      `json:"body_text,omitempty"`
+	RawJSON      string      `json:"raw_json"`
+	Items        []EventItem `json:"items,omitempty"`
+	CreatedAt    time.Time   `json:"created_at"`
+}
+
+type EventItem struct {
+	Kind                   string `json:"kind"`
+	Text                   string `json:"text,omitempty"`
+	FileName               string `json:"file_name,omitempty"`
+	FileLen                string `json:"file_len,omitempty"`
+	EncodeType             int    `json:"encode_type,omitempty"`
+	MediaEncryptQueryParam string `json:"media_encrypt_query_param,omitempty"`
+	MediaAESKey            string `json:"media_aes_key,omitempty"`
+	LocalPath              string `json:"local_path,omitempty"`
 }
 
 type LogEntry struct {

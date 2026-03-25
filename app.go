@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"context"
+	"encoding/base64"
 	"log/slog"
 	"time"
+
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	coreapp "wcfLink/internal/app"
 	"wcfLink/internal/httpapi"
@@ -44,17 +46,18 @@ type AccountView struct {
 }
 
 type EventView struct {
-	ID           int64  `json:"id"`
-	AccountID    string `json:"account_id"`
-	Direction    string `json:"direction"`
-	EventType    string `json:"event_type"`
-	FromUserID   string `json:"from_user_id,omitempty"`
-	ToUserID     string `json:"to_user_id,omitempty"`
-	MessageID    int64  `json:"message_id,omitempty"`
-	ContextToken string `json:"context_token,omitempty"`
-	BodyText     string `json:"body_text,omitempty"`
-	RawJSON      string `json:"raw_json"`
-	CreatedAt    string `json:"created_at"`
+	ID           int64             `json:"id"`
+	AccountID    string            `json:"account_id"`
+	Direction    string            `json:"direction"`
+	EventType    string            `json:"event_type"`
+	FromUserID   string            `json:"from_user_id,omitempty"`
+	ToUserID     string            `json:"to_user_id,omitempty"`
+	MessageID    int64             `json:"message_id,omitempty"`
+	ContextToken string            `json:"context_token,omitempty"`
+	BodyText     string            `json:"body_text,omitempty"`
+	RawJSON      string            `json:"raw_json"`
+	Items        []model.EventItem `json:"items,omitempty"`
+	CreatedAt    string            `json:"created_at"`
 }
 
 type WebhookDeadLetterView struct {
@@ -202,6 +205,19 @@ func (a *AppBridge) SendText(accountID, toUserID, text string) error {
 	return a.core.SendText(context.Background(), accountID, toUserID, text, "")
 }
 
+func (a *AppBridge) SendMedia(accountID, toUserID, filePath, text string) error {
+	return a.core.SendMedia(context.Background(), accountID, toUserID, filePath, text, "")
+}
+
+func (a *AppBridge) ChooseMediaFile() (string, error) {
+	return wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{
+		Title: "选择要发送的媒体文件",
+		Filters: []wruntime.FileFilter{
+			{DisplayName: "媒体文件", Pattern: "*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.webp;*.tiff;*.ico;*.svg;*.mp4;*.avi;*.mov;*.mkv;*.webm;*.flv;*.pdf;*.zip;*.rar;*.7z;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.txt;*.*"},
+		},
+	})
+}
+
 func (a *AppBridge) RetryDeadLetter(id int64) error {
 	return a.core.RetryDeadLetter(context.Background(), id)
 }
@@ -257,6 +273,7 @@ func toEventView(in model.Event) EventView {
 		ContextToken: in.ContextToken,
 		BodyText:     in.BodyText,
 		RawJSON:      in.RawJSON,
+		Items:        in.Items,
 		CreatedAt:    formatTime(in.CreatedAt),
 	}
 }

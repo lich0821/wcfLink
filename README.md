@@ -7,7 +7,10 @@
 - 已登录账号持久化
 - iLink `getupdates` 长轮询收消息
 - 文本消息接收与落库
+- 图片、语音、视频、文件接收与结构化展示
+- 图片、语音、视频、文件自动下载到本地目录
 - 文本消息发送
+- 图片、视频、文件发送
 - 回调地址配置
 - WebHook 重试与死信
 - 本地事件面板
@@ -17,7 +20,7 @@
 
 当前仍未实现：
 
-- 图片、语音、视频、文件收发
+- 语音发送
 - Pull 消费确认
 - 订阅推送编排
 
@@ -93,6 +96,8 @@ wails dev
 - 设置回调地址
 - 查看并手动重试 WebHook 死信
 - 查看事件流
+- 在事件流中查看图片、语音、视频、文件的结构化元数据
+- 选择本地图片、视频、文件并直接发送
 - 发送测试文本消息
 
 ### 后台模式构建
@@ -174,7 +179,14 @@ go build -o ./bin/wcfLink ./cmd/wcfLink
 - `GET /api/settings`
 - `POST /api/settings`
 - `POST /api/messages/send-text`
+- `POST /api/messages/send-media`
 - `POST /api/webhooks/dead-letters/{id}/retry`
+
+说明：
+
+- `GET /api/events` 中的每条入站事件现在会附带 `items` 数组
+- `items` 会输出消息项类型，以及语音转写、文件名、媒体参数、本地下载路径等结构化字段
+- 历史媒体事件在首次读取时会懒下载到本地目录
 
 ### 发送文本消息
 
@@ -196,7 +208,9 @@ curl -s -X POST http://127.0.0.1:17890/api/messages/send-text \
 - `WCFLINK_STATE_DIR`
 - `WCFLINK_DB_PATH`
 - `WCFLINK_BASE_URL`
+- `WCFLINK_CDN_BASE_URL`
 - `WCFLINK_CHANNEL_VERSION`
+- `WCFLINK_MEDIA_DIR`
 - `WCFLINK_POLL_TIMEOUT`
 - `WCFLINK_LOG_LEVEL`
 
@@ -210,6 +224,12 @@ curl -s -X POST http://127.0.0.1:17890/api/messages/send-text \
 
 - `listen_addr`
 - `webhook_url`
+
+媒体文件默认保存到：
+
+```text
+<state-dir>/media/
+```
 
 ## 验证状态
 

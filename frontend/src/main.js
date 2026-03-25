@@ -1,5 +1,5 @@
 import './style.css';
-import { GetOverview, StartLogin, GetLoginStatus, GetLoginQRCode, SaveSettings, ListEvents, ListDeadLetters, SendText, RetryDeadLetter, Logout } from '../wailsjs/go/main/AppBridge';
+import { ChooseMediaFile, GetOverview, StartLogin, GetLoginStatus, GetLoginQRCode, SaveSettings, ListEvents, ListDeadLetters, SendText, SendMedia, RetryDeadLetter, Logout } from '../wailsjs/go/main/AppBridge';
 import { ClipboardSetText } from '../wailsjs/runtime/runtime';
 
 const state = {
@@ -9,6 +9,7 @@ const state = {
   connected: null,
   events: [],
   deadLetters: [],
+  mediaFilePath: '',
   recentInboundUserId: '',
 };
 
@@ -70,6 +71,16 @@ app.innerHTML = `
             <textarea id="sendText" rows="4" placeholder="输入一段文本，用于测试消息发送"></textarea>
           </label>
           <button id="sendBtn" class="primary wide">发送文本</button>
+          <div class="media-composer">
+            <div id="mediaFilePath" class="static-value">未选择文件</div>
+            <div class="media-actions">
+              <button id="chooseMediaBtn" class="ghost wide">选择媒体文件</button>
+              <button id="sendMediaBtn" class="primary wide">发送媒体</button>
+            </div>
+            <label class="field">
+              <textarea id="mediaCaption" rows="3" placeholder="可选：给媒体附带一段说明文字"></textarea>
+            </label>
+          </div>
         </div>
 
         <div class="panel dead-panel">
@@ -111,6 +122,10 @@ const els = {
   sendHint: document.getElementById('sendHint'),
   sendText: document.getElementById('sendText'),
   sendBtn: document.getElementById('sendBtn'),
+  mediaFilePath: document.getElementById('mediaFilePath'),
+  chooseMediaBtn: document.getElementById('chooseMediaBtn'),
+  mediaCaption: document.getElementById('mediaCaption'),
+  sendMediaBtn: document.getElementById('sendMediaBtn'),
   deadEmpty: document.getElementById('deadEmpty'),
   deadList: document.getElementById('deadList'),
   eventsEmpty: document.getElementById('eventsEmpty'),
@@ -119,6 +134,15 @@ const els = {
 };
 
 let toastTimer = null;
+
+function escapeHTML(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function showToast(message) {
   const text = message instanceof Error ? message.message : String(message);
@@ -145,6 +169,63 @@ function bjTime(value) {
     second: '2-digit',
     hour12: false,
   }).format(date).replace(/\//g, '-');
+}
+
+function compactValue(value, head = 18) {
+  const text = String(value || '');
+  if (!text) return '';
+  if (text.length <= head) return text;
+  return `${text.slice(0, head)}…`;
+}
+
+function shouldRenderEventItems(event) {
+  const items = event.items || [];
+  return items.length > 0 && (items.length > 1 || items.some(item => item.kind !== 'text'));
+}
+
+function renderEventItemsHTML(items) {
+  return `
+    <div class="event-items">
+      ${items.map(renderEventItemHTML).join('')}
+    </div>
+  `;
+}
+
+function renderEventItemHTML(item) {
+  const kind = escapeHTML(item.kind || 'unknown');
+  const meta = [];
+  if (item.text) {
+    meta.push(`<div class="event-item-line">${escapeHTML(item.text)}</div>`);
+  }
+  if (item.file_name) {
+    meta.push(`<div class="event-item-line">文件名：${escapeHTML(item.file_name)}</div>`);
+  }
+  if (item.file_len) {
+    meta.push(`<div class="event-item-line">大小：${escapeHTML(item.file_len)}</div>`);
+  }
+  if (item.encode_type) {
+    meta.push(`<div class="event-item-line">编码：${escapeHTML(item.encode_type)}</div>`);
+  }
+  if (item.media_encrypt_query_param) {
+    meta.push(`<div class="event-item-line">媒体参数：<span class="code-chip" title="${escapeHTML(item.media_encrypt_query_param)}">${escapeHTML(compactValue(item.media_encrypt_query_param))}</span></div>`);
+  }
+  if (item.media_aes_key) {
+    meta.push(`<div class="event-item-line">AES Key：<span class="code-chip" title="${escapeHTML(item.media_aes_key)}">${escapeHTML(compactValue(item.media_aes_key))}</span></div>`);
+  }
+  if (item.local_path) {
+    meta.push(`<div class="event-item-line">本地文件：<span class="code-chip" title="${escapeHTML(item.local_path)}">${escapeHTML(compactValue(item.local_path, 42))}</span></div>`);
+  }
+  if (!meta.length) {
+    meta.push('<div class="event-item-line muted-text">已收到该消息类型的结构化元数据。</div>');
+  }
+  return `
+    <div class="event-item">
+      <div class="event-item-head">
+        <span class="pill muted">${kind}</span>
+      </div>
+      ${meta.join('')}
+    </div>
+  `;
 }
 
 function renderOverview(overview) {
@@ -199,6 +280,9 @@ function renderOverview(overview) {
     els.sendAccountId.textContent = '未登录';
     els.sendToUserId.textContent = '等待收到一条消息';
     state.recentInboundUserId = '';
+    state.mediaFilePath = '';
+    els.mediaCaption.value = '';
+    renderMediaSelection();
     syncSuggestedTarget();
   }
   updateSendState();
@@ -223,13 +307,15 @@ function renderEvents() {
   for (const item of state.events) {
     const row = document.createElement('article');
     row.className = 'event-row';
+    const itemDetails = shouldRenderEventItems(item) ? renderEventItemsHTML(item.items || []) : '';
     row.innerHTML = `
       <header>
         <strong>${bjTime(item.created_at)}</strong>
         <span class="pill ${item.direction}">${item.direction}</span>
         <span class="pill muted">${item.event_type}</span>
       </header>
-      <div class="body">${item.body_text || '(空文本)'}</div>
+      <div class="body">${escapeHTML(item.body_text || '(空文本)')}</div>
+      ${itemDetails}
     `;
     els.eventsList.appendChild(row);
   }
@@ -251,9 +337,9 @@ function renderDeadLetters() {
         <span class="pill dead">dead</span>
         <span class="pill muted">${item.event_type}</span>
       </header>
-      <div class="body">${item.body_text || '(空文本)'}</div>
-      <p class="dead-meta">账号：${item.account_id || '-'} | 来源：${item.from_user_id || '-'} | 尝试：${item.attempt_count}/${item.max_attempts}</p>
-      <p class="dead-error">${item.last_error || '未知错误'}</p>
+      <div class="body">${escapeHTML(item.body_text || '(空文本)')}</div>
+      <p class="dead-meta">账号：${escapeHTML(item.account_id || '-')} | 来源：${escapeHTML(item.from_user_id || '-')} | 尝试：${item.attempt_count}/${item.max_attempts}</p>
+      <p class="dead-error">${escapeHTML(item.last_error || '未知错误')}</p>
       <button class="ghost retry-dead-btn" data-id="${item.id}">重新投递</button>
     `;
     els.deadList.appendChild(row);
@@ -297,6 +383,13 @@ function updateSendState() {
   const canReply = Boolean(state.connected && state.recentInboundUserId);
   els.sendText.disabled = !canReply;
   els.sendBtn.disabled = !canReply || !els.sendText.value.trim();
+  els.chooseMediaBtn.disabled = !canReply;
+  els.mediaCaption.disabled = !canReply;
+  els.sendMediaBtn.disabled = !canReply || !state.mediaFilePath;
+}
+
+function renderMediaSelection() {
+  els.mediaFilePath.textContent = state.mediaFilePath || '未选择文件';
 }
 
 async function loadOverview() {
@@ -373,6 +466,30 @@ async function sendTextMessage() {
   showToast('消息已发送');
 }
 
+async function chooseMediaFile() {
+  const filePath = await ChooseMediaFile();
+  state.mediaFilePath = filePath || '';
+  renderMediaSelection();
+  updateSendState();
+}
+
+async function sendMediaMessage() {
+  const accountID = state.connected?.account_id || '';
+  const toUserID = state.recentInboundUserId || '';
+  const filePath = state.mediaFilePath || '';
+  const text = els.mediaCaption.value.trim();
+  if (!accountID || !toUserID || !filePath) {
+    showToast('当前没有可回复的目标用户，或尚未选择文件。');
+    return;
+  }
+  await SendMedia(accountID, toUserID, filePath, text);
+  state.mediaFilePath = '';
+  els.mediaCaption.value = '';
+  renderMediaSelection();
+  updateSendState();
+  showToast('媒体已发送');
+}
+
 async function logout() {
   if (!state.connected) return;
   await Logout(state.connected.account_id);
@@ -389,9 +506,12 @@ els.accountActionBtn.addEventListener('click', () => {
 });
 els.saveSettingsBtn.addEventListener('click', () => saveSettings().catch(err => showToast(err)));
 els.sendBtn.addEventListener('click', () => sendTextMessage().catch(err => showToast(err)));
+els.chooseMediaBtn.addEventListener('click', () => chooseMediaFile().catch(err => showToast(err)));
+els.sendMediaBtn.addEventListener('click', () => sendMediaMessage().catch(err => showToast(err)));
 els.sendText.addEventListener('input', () => updateSendState());
 
 async function bootstrap() {
+  renderMediaSelection();
   await loadOverview();
   await pollEvents();
   await loadDeadLetters();
