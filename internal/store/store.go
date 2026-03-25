@@ -20,6 +20,8 @@ type Store struct {
 	db *sql.DB
 }
 
+const defaultWebhookMaxAttempts = 5
+
 func New(ctx context.Context, dbPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, err
@@ -210,6 +212,7 @@ func (s *Store) DeleteAccount(ctx context.Context, accountID string) error {
 		`DELETE FROM accounts WHERE account_id = ?`,
 		`DELETE FROM peer_contexts WHERE account_id = ?`,
 		`DELETE FROM login_sessions WHERE account_id = ?`,
+		`DELETE FROM webhook_deliveries WHERE account_id = ?`,
 	}
 	for _, stmt := range statements {
 		if _, err := tx.ExecContext(ctx, stmt, accountID); err != nil {
@@ -236,28 +239,64 @@ WHERE account_id = ?`, now, now, accountID)
 	return err
 }
 
-func (s *Store) SaveInboundMessage(ctx context.Context, accountID string, msg ilink.WeixinMessage) error {
+func (s *Store) SaveInboundMessage(ctx context.Context, accountID string, msg ilink.WeixinMessage) (model.Event, bool, error) {
 	raw, err := json.Marshal(msg)
 	if err != nil {
-		return err
+		return model.Event{}, false, err
 	}
+	eventType := detectEventType(msg)
 	bodyText := extractBodyText(msg)
 	now := time.Now().UTC()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return model.Event{}, false, err
 	}
 	defer tx.Rollback()
 
-	_, err = tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO events (
   account_id, direction, event_type, from_user_id, to_user_id, message_id, context_token, body_text, raw_json, created_at
 ) VALUES (?, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?)`,
-		accountID, detectEventType(msg), msg.FromUserID, msg.ToUserID, msg.MessageID, msg.ContextToken, bodyText, string(raw), now,
+		accountID, eventType, msg.FromUserID, msg.ToUserID, msg.MessageID, msg.ContextToken, bodyText, string(raw), now,
 	)
 	if err != nil {
-		return err
+		return model.Event{}, false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return model.Event{}, false, err
+	}
+
+	event := model.Event{
+		AccountID:    accountID,
+		Direction:    "inbound",
+		EventType:    eventType,
+		FromUserID:   msg.FromUserID,
+		ToUserID:     msg.ToUserID,
+		MessageID:    msg.MessageID,
+		ContextToken: msg.ContextToken,
+		BodyText:     bodyText,
+		RawJSON:      string(raw),
+		CreatedAt:    now,
+	}
+	inserted := rowsAffected > 0
+	if inserted {
+		eventID, err := result.LastInsertId()
+		if err != nil {
+			return model.Event{}, false, err
+		}
+		event.ID = eventID
+	} else if msg.MessageID != 0 {
+		row := tx.QueryRowContext(ctx, `
+SELECT id, created_at
+FROM events
+WHERE account_id = ? AND direction = 'inbound' AND message_id = ?`,
+			accountID, msg.MessageID,
+		)
+		if err := row.Scan(&event.ID, &event.CreatedAt); err != nil {
+			return model.Event{}, false, err
+		}
 	}
 
 	if stringsNotEmpty(msg.FromUserID, msg.ContextToken) {
@@ -268,7 +307,7 @@ ON CONFLICT(account_id, peer_user_id) DO UPDATE SET
   context_token = excluded.context_token,
   updated_at = excluded.updated_at`, accountID, msg.FromUserID, msg.ContextToken, now)
 		if err != nil {
-			return err
+			return model.Event{}, false, err
 		}
 	}
 
@@ -277,10 +316,13 @@ UPDATE accounts
 SET last_inbound_at = ?, updated_at = ?, last_error = '', login_status = 'connected'
 WHERE account_id = ?`, now, now, accountID)
 	if err != nil {
-		return err
+		return model.Event{}, false, err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return model.Event{}, false, err
+	}
+	return event, inserted, nil
 }
 
 func (s *Store) GetPeerContext(ctx context.Context, accountID, peerUserID string) (model.PeerContext, error) {
@@ -303,6 +345,151 @@ INSERT INTO events (
 		accountID, toUserID, contextToken, bodyText, rawJSON, time.Now().UTC(),
 	)
 	return err
+}
+
+func (s *Store) EnqueueWebhookDelivery(ctx context.Context, event model.Event, payload []byte) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO webhook_deliveries (
+  event_id, account_id, event_type, from_user_id, to_user_id, message_id, body_text, payload_json,
+  status, attempt_count, max_attempts, next_attempt_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
+ON CONFLICT(event_id) DO NOTHING`,
+		event.ID, event.AccountID, event.EventType, event.FromUserID, event.ToUserID, event.MessageID,
+		event.BodyText, string(payload), defaultWebhookMaxAttempts, now, now, now,
+	)
+	return err
+}
+
+func (s *Store) ListDueWebhookDeliveries(ctx context.Context, limit int) ([]model.WebhookDelivery, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, event_id, account_id, event_type, from_user_id, to_user_id, message_id, body_text,
+       payload_json, status, attempt_count, max_attempts, last_error, last_http_status, last_webhook_url,
+       next_attempt_at, last_attempt_at, delivered_at, dead_letter_at, created_at, updated_at
+FROM webhook_deliveries
+WHERE status IN ('pending', 'retrying') AND next_attempt_at <= ?
+ORDER BY next_attempt_at ASC, id ASC
+LIMIT ?`, time.Now().UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]model.WebhookDelivery, 0)
+	for rows.Next() {
+		item, err := scanWebhookDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) MarkWebhookDeliveryDelivered(ctx context.Context, id int64, webhookURL string, statusCode int) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+UPDATE webhook_deliveries
+SET status = 'delivered',
+    attempt_count = attempt_count + 1,
+    last_error = '',
+    last_http_status = ?,
+    last_webhook_url = ?,
+    last_attempt_at = ?,
+    delivered_at = ?,
+    updated_at = ?
+WHERE id = ?`, statusCode, webhookURL, now, now, now, id)
+	return err
+}
+
+func (s *Store) MarkWebhookDeliveryForRetry(ctx context.Context, id int64, webhookURL string, statusCode int, errText string, nextAttemptAt time.Time) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+UPDATE webhook_deliveries
+SET status = 'retrying',
+    attempt_count = attempt_count + 1,
+    last_error = ?,
+    last_http_status = ?,
+    last_webhook_url = ?,
+    last_attempt_at = ?,
+    next_attempt_at = ?,
+    updated_at = ?
+WHERE id = ?`, errText, statusCode, webhookURL, now, nextAttemptAt.UTC(), now, id)
+	return err
+}
+
+func (s *Store) MarkWebhookDeliveryDead(ctx context.Context, id int64, webhookURL string, statusCode int, errText string) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+UPDATE webhook_deliveries
+SET status = 'dead',
+    attempt_count = attempt_count + 1,
+    last_error = ?,
+    last_http_status = ?,
+    last_webhook_url = ?,
+    last_attempt_at = ?,
+    dead_letter_at = ?,
+    updated_at = ?
+WHERE id = ?`, errText, statusCode, webhookURL, now, now, now, id)
+	return err
+}
+
+func (s *Store) ListDeadWebhookDeliveries(ctx context.Context, limit int) ([]model.WebhookDelivery, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, event_id, account_id, event_type, from_user_id, to_user_id, message_id, body_text,
+       payload_json, status, attempt_count, max_attempts, last_error, last_http_status, last_webhook_url,
+       next_attempt_at, last_attempt_at, delivered_at, dead_letter_at, created_at, updated_at
+FROM webhook_deliveries
+WHERE status = 'dead'
+ORDER BY id DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]model.WebhookDelivery, 0)
+	for rows.Next() {
+		item, err := scanWebhookDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) RetryDeadWebhookDelivery(ctx context.Context, id int64) error {
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx, `
+UPDATE webhook_deliveries
+SET status = 'pending',
+    attempt_count = 0,
+    last_error = '',
+    last_http_status = 0,
+    last_attempt_at = NULL,
+    delivered_at = NULL,
+    dead_letter_at = NULL,
+    next_attempt_at = ?,
+    updated_at = ?
+WHERE id = ? AND status = 'dead'`, now, now, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) AddLog(ctx context.Context, level, message, source, metaJSON string) error {
@@ -429,6 +616,31 @@ func (s *Store) migrate(ctx context.Context) error {
 			meta_json TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMP NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id INTEGER NOT NULL UNIQUE,
+			account_id TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			from_user_id TEXT NOT NULL DEFAULT '',
+			to_user_id TEXT NOT NULL DEFAULT '',
+			message_id INTEGER NOT NULL DEFAULT 0,
+			body_text TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL,
+			status TEXT NOT NULL,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 5,
+			last_error TEXT NOT NULL DEFAULT '',
+			last_http_status INTEGER NOT NULL DEFAULT 0,
+			last_webhook_url TEXT NOT NULL DEFAULT '',
+			next_attempt_at TIMESTAMP NOT NULL,
+			last_attempt_at TIMESTAMP,
+			delivered_at TIMESTAMP,
+			dead_letter_at TIMESTAMP,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status_due
+		 ON webhook_deliveries(status, next_attempt_at, id);`,
 	}
 
 	for _, stmt := range stmts {
@@ -437,6 +649,34 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func scanWebhookDelivery(scanner interface {
+	Scan(dest ...any) error
+}) (model.WebhookDelivery, error) {
+	var item model.WebhookDelivery
+	var lastAttemptAt sql.NullTime
+	var deliveredAt sql.NullTime
+	var deadLetterAt sql.NullTime
+	err := scanner.Scan(
+		&item.ID, &item.EventID, &item.AccountID, &item.EventType, &item.FromUserID, &item.ToUserID,
+		&item.MessageID, &item.BodyText, &item.PayloadJSON, &item.Status, &item.AttemptCount,
+		&item.MaxAttempts, &item.LastError, &item.LastHTTPStatus, &item.LastWebhookURL,
+		&item.NextAttemptAt, &lastAttemptAt, &deliveredAt, &deadLetterAt, &item.CreatedAt, &item.UpdatedAt,
+	)
+	if err != nil {
+		return model.WebhookDelivery{}, err
+	}
+	if lastAttemptAt.Valid {
+		item.LastAttemptAt = &lastAttemptAt.Time
+	}
+	if deliveredAt.Valid {
+		item.DeliveredAt = &deliveredAt.Time
+	}
+	if deadLetterAt.Valid {
+		item.DeadLetterAt = &deadLetterAt.Time
+	}
+	return item, nil
 }
 
 func extractBodyText(msg ilink.WeixinMessage) string {

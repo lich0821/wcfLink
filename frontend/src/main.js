@@ -1,5 +1,5 @@
 import './style.css';
-import { GetOverview, StartLogin, GetLoginStatus, GetLoginQRCode, SaveSettings, ListEvents, SendText, Logout } from '../wailsjs/go/main/AppBridge';
+import { GetOverview, StartLogin, GetLoginStatus, GetLoginQRCode, SaveSettings, ListEvents, ListDeadLetters, SendText, RetryDeadLetter, Logout } from '../wailsjs/go/main/AppBridge';
 import { ClipboardSetText } from '../wailsjs/runtime/runtime';
 
 const state = {
@@ -8,6 +8,7 @@ const state = {
   polling: null,
   connected: null,
   events: [],
+  deadLetters: [],
   recentInboundUserId: '',
 };
 
@@ -71,6 +72,16 @@ app.innerHTML = `
           <button id="sendBtn" class="primary wide">发送文本</button>
         </div>
 
+        <div class="panel dead-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Webhook 死信</h2>
+            </div>
+          </div>
+          <div id="deadEmpty" class="empty">当前没有死信。</div>
+          <div id="deadList" class="dead-list"></div>
+        </div>
+
         <div class="panel events-panel">
           <div class="panel-head">
             <div>
@@ -100,6 +111,8 @@ const els = {
   sendHint: document.getElementById('sendHint'),
   sendText: document.getElementById('sendText'),
   sendBtn: document.getElementById('sendBtn'),
+  deadEmpty: document.getElementById('deadEmpty'),
+  deadList: document.getElementById('deadList'),
   eventsEmpty: document.getElementById('eventsEmpty'),
   eventsList: document.getElementById('eventsList'),
   toast: document.getElementById('toast'),
@@ -222,6 +235,47 @@ function renderEvents() {
   }
 }
 
+function renderDeadLetters() {
+  els.deadList.innerHTML = '';
+  if (!state.deadLetters.length) {
+    els.deadEmpty.classList.remove('hidden');
+    return;
+  }
+  els.deadEmpty.classList.add('hidden');
+  for (const item of state.deadLetters) {
+    const row = document.createElement('article');
+    row.className = 'dead-row';
+    row.innerHTML = `
+      <header>
+        <strong>${bjTime(item.dead_letter_at || item.updated_at || item.created_at)}</strong>
+        <span class="pill dead">dead</span>
+        <span class="pill muted">${item.event_type}</span>
+      </header>
+      <div class="body">${item.body_text || '(空文本)'}</div>
+      <p class="dead-meta">账号：${item.account_id || '-'} | 来源：${item.from_user_id || '-'} | 尝试：${item.attempt_count}/${item.max_attempts}</p>
+      <p class="dead-error">${item.last_error || '未知错误'}</p>
+      <button class="ghost retry-dead-btn" data-id="${item.id}">重新投递</button>
+    `;
+    els.deadList.appendChild(row);
+  }
+  for (const button of els.deadList.querySelectorAll('.retry-dead-btn')) {
+    button.addEventListener('click', async (event) => {
+      const id = Number(event.currentTarget.dataset.id || '0');
+      if (!id) return;
+      event.currentTarget.disabled = true;
+      try {
+        await RetryDeadLetter(id);
+        showToast('死信已重新入队');
+        await loadDeadLetters();
+      } catch (err) {
+        showToast(err);
+      } finally {
+        event.currentTarget.disabled = false;
+      }
+    });
+  }
+}
+
 function syncSuggestedTarget() {
   if (!state.connected) {
     els.sendToUserId.textContent = '等待收到一条消息';
@@ -260,6 +314,11 @@ async function pollEvents() {
     }
     renderEvents();
   }
+}
+
+async function loadDeadLetters() {
+  state.deadLetters = await ListDeadLetters(20);
+  renderDeadLetters();
 }
 
 async function beginLogin() {
@@ -335,7 +394,9 @@ els.sendText.addEventListener('input', () => updateSendState());
 async function bootstrap() {
   await loadOverview();
   await pollEvents();
+  await loadDeadLetters();
   setInterval(() => pollEvents().catch(console.error), 3000);
+  setInterval(() => loadDeadLetters().catch(console.error), 5000);
   setInterval(() => loadOverview().catch(console.error), 5000);
 }
 

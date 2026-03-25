@@ -62,6 +62,30 @@ type LogEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type WebhookDelivery struct {
+	ID             int64      `json:"id"`
+	EventID        int64      `json:"event_id"`
+	AccountID      string     `json:"account_id"`
+	EventType      string     `json:"event_type"`
+	FromUserID     string     `json:"from_user_id,omitempty"`
+	ToUserID       string     `json:"to_user_id,omitempty"`
+	MessageID      int64      `json:"message_id,omitempty"`
+	BodyText       string     `json:"body_text,omitempty"`
+	PayloadJSON    string     `json:"payload_json"`
+	Status         string     `json:"status"`
+	AttemptCount   int        `json:"attempt_count"`
+	MaxAttempts    int        `json:"max_attempts"`
+	LastError      string     `json:"last_error,omitempty"`
+	LastHTTPStatus int        `json:"last_http_status,omitempty"`
+	LastWebhookURL string     `json:"last_webhook_url,omitempty"`
+	NextAttemptAt  time.Time  `json:"next_attempt_at"`
+	LastAttemptAt  *time.Time `json:"last_attempt_at,omitempty"`
+	DeliveredAt    *time.Time `json:"delivered_at,omitempty"`
+	DeadLetterAt   *time.Time `json:"dead_letter_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
 type Settings struct {
 	ListenAddr string `json:"listen_addr"`
 	WebhookURL string `json:"webhook_url"`

@@ -57,6 +57,28 @@ type EventView struct {
 	CreatedAt    string `json:"created_at"`
 }
 
+type WebhookDeadLetterView struct {
+	ID             int64  `json:"id"`
+	EventID        int64  `json:"event_id"`
+	AccountID      string `json:"account_id"`
+	EventType      string `json:"event_type"`
+	FromUserID     string `json:"from_user_id,omitempty"`
+	ToUserID       string `json:"to_user_id,omitempty"`
+	MessageID      int64  `json:"message_id,omitempty"`
+	BodyText       string `json:"body_text,omitempty"`
+	Status         string `json:"status"`
+	AttemptCount   int    `json:"attempt_count"`
+	MaxAttempts    int    `json:"max_attempts"`
+	LastError      string `json:"last_error,omitempty"`
+	LastHTTPStatus int    `json:"last_http_status,omitempty"`
+	LastWebhookURL string `json:"last_webhook_url,omitempty"`
+	NextAttemptAt  string `json:"next_attempt_at"`
+	LastAttemptAt  string `json:"last_attempt_at,omitempty"`
+	DeadLetterAt   string `json:"dead_letter_at,omitempty"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
 type Overview struct {
 	Settings        model.Settings `json:"settings"`
 	Accounts        []AccountView  `json:"accounts"`
@@ -164,8 +186,24 @@ func (a *AppBridge) ListEvents(afterID int64, limit int) ([]EventView, error) {
 	return out, nil
 }
 
+func (a *AppBridge) ListDeadLetters(limit int) ([]WebhookDeadLetterView, error) {
+	items, err := a.core.ListDeadLetters(context.Background(), limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WebhookDeadLetterView, 0, len(items))
+	for _, item := range items {
+		out = append(out, toWebhookDeadLetterView(item))
+	}
+	return out, nil
+}
+
 func (a *AppBridge) SendText(accountID, toUserID, text string) error {
 	return a.core.SendText(context.Background(), accountID, toUserID, text, "")
+}
+
+func (a *AppBridge) RetryDeadLetter(id int64) error {
+	return a.core.RetryDeadLetter(context.Background(), id)
 }
 
 func (a *AppBridge) Logout(accountID string) error {
@@ -220,6 +258,30 @@ func toEventView(in model.Event) EventView {
 		BodyText:     in.BodyText,
 		RawJSON:      in.RawJSON,
 		CreatedAt:    formatTime(in.CreatedAt),
+	}
+}
+
+func toWebhookDeadLetterView(in model.WebhookDelivery) WebhookDeadLetterView {
+	return WebhookDeadLetterView{
+		ID:             in.ID,
+		EventID:        in.EventID,
+		AccountID:      in.AccountID,
+		EventType:      in.EventType,
+		FromUserID:     in.FromUserID,
+		ToUserID:       in.ToUserID,
+		MessageID:      in.MessageID,
+		BodyText:       in.BodyText,
+		Status:         in.Status,
+		AttemptCount:   in.AttemptCount,
+		MaxAttempts:    in.MaxAttempts,
+		LastError:      in.LastError,
+		LastHTTPStatus: in.LastHTTPStatus,
+		LastWebhookURL: in.LastWebhookURL,
+		NextAttemptAt:  formatTime(in.NextAttemptAt),
+		LastAttemptAt:  formatTimePtr(in.LastAttemptAt),
+		DeadLetterAt:   formatTimePtr(in.DeadLetterAt),
+		CreatedAt:      formatTime(in.CreatedAt),
+		UpdatedAt:      formatTime(in.UpdatedAt),
 	}
 }
 

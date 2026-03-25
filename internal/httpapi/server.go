@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"wcfLink/internal/model"
+	"wcfLink/internal/store"
 )
 
 type Service interface {
@@ -21,9 +22,11 @@ type Service interface {
 	ListAccounts(ctx context.Context) ([]model.Account, error)
 	ListEvents(ctx context.Context, afterID int64, limit int) ([]model.Event, error)
 	ListLogs(ctx context.Context, afterID int64, limit int) ([]model.LogEntry, error)
+	ListDeadLetters(ctx context.Context, limit int) ([]model.WebhookDelivery, error)
 	GetSettings(ctx context.Context) (model.Settings, error)
 	UpdateSettings(ctx context.Context, settings model.Settings) (model.Settings, error)
 	SendText(ctx context.Context, accountID, toUserID, text, contextToken string) error
+	RetryDeadLetter(ctx context.Context, id int64) error
 }
 
 type Server struct {
@@ -45,6 +48,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
+	mux.HandleFunc("GET /api/webhooks/dead-letters", s.handleDeadLetters)
+	mux.HandleFunc("POST /api/webhooks/dead-letters/{id}/retry", s.handleRetryDeadLetter)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("POST /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("POST /api/messages/send-text", s.handleSendText)
@@ -159,6 +164,16 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (s *Server) handleDeadLetters(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	items, err := s.service.ListDeadLetters(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.service.GetSettings(r.Context())
 	if err != nil {
@@ -207,6 +222,23 @@ func (s *Server) handleSendText(w http.ResponseWriter, r *http.Request) {
 	if err := s.service.SendText(r.Context(), req.AccountID, req.ToUserID, req.Text, req.ContextToken); err != nil {
 		if errors.Is(err, ilinkErrNotFoundContextToken) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRetryDeadLetter(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("id")), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid dead letter id"})
+		return
+	}
+	if err := s.service.RetryDeadLetter(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "dead letter not found"})
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err)

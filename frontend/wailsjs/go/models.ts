@@ -130,6 +130,54 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class WebhookDeadLetterView {
+	    id: number;
+	    event_id: number;
+	    account_id: string;
+	    event_type: string;
+	    from_user_id?: string;
+	    to_user_id?: string;
+	    message_id?: number;
+	    body_text?: string;
+	    status: string;
+	    attempt_count: number;
+	    max_attempts: number;
+	    last_error?: string;
+	    last_http_status?: number;
+	    last_webhook_url?: string;
+	    next_attempt_at: string;
+	    last_attempt_at?: string;
+	    dead_letter_at?: string;
+	    created_at: string;
+	    updated_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WebhookDeadLetterView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.event_id = source["event_id"];
+	        this.account_id = source["account_id"];
+	        this.event_type = source["event_type"];
+	        this.from_user_id = source["from_user_id"];
+	        this.to_user_id = source["to_user_id"];
+	        this.message_id = source["message_id"];
+	        this.body_text = source["body_text"];
+	        this.status = source["status"];
+	        this.attempt_count = source["attempt_count"];
+	        this.max_attempts = source["max_attempts"];
+	        this.last_error = source["last_error"];
+	        this.last_http_status = source["last_http_status"];
+	        this.last_webhook_url = source["last_webhook_url"];
+	        this.next_attempt_at = source["next_attempt_at"];
+	        this.last_attempt_at = source["last_attempt_at"];
+	        this.dead_letter_at = source["dead_letter_at"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	    }
+	}
 
 }
 

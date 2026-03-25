@@ -92,7 +92,7 @@ h1 {
 }
 
 .right-col {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .panel {
@@ -370,8 +370,69 @@ textarea:disabled {
 }
 
 .send-panel,
+.dead-panel,
 .events-panel {
   min-width: 0;
+}
+
+.dead-panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dead-list {
+  display: grid;
+  gap: 12px;
+  max-height: 190px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.dead-row {
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255,255,255,0.7);
+  border: 1px solid rgba(31, 27, 21, 0.06);
+}
+
+.dead-row header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.dead-row header strong {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.dead-meta,
+.dead-error {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.dead-meta {
+  color: var(--muted);
+}
+
+.dead-error {
+  color: #8e4032;
+}
+
+.pill.dead {
+  background: rgba(142, 64, 50, 0.12);
+  color: #8e4032;
+}
+
+.retry-dead-btn {
+  margin-top: 10px;
 }
 
 .events-panel {

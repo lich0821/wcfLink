@@ -14,6 +14,10 @@ export function GetOverview() {
   return window['go']['main']['AppBridge']['GetOverview']();
 }
 
+export function ListDeadLetters(arg1) {
+  return window['go']['main']['AppBridge']['ListDeadLetters'](arg1);
+}
+
 export function ListEvents(arg1, arg2) {
   return window['go']['main']['AppBridge']['ListEvents'](arg1, arg2);
 }
@@ -24,6 +28,10 @@ export function Logout(arg1) {
 
 export function NowBJ() {
   return window['go']['main']['AppBridge']['NowBJ']();
+}
+
+export function RetryDeadLetter(arg1) {
+  return window['go']['main']['AppBridge']['RetryDeadLetter'](arg1);
 }
 
 export function SaveSettings(arg1, arg2) {

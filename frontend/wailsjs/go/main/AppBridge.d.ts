@@ -9,11 +9,15 @@ export function GetLoginStatus(arg1:string):Promise<main.LoginSessionView>;
 
 export function GetOverview():Promise<main.Overview>;
 
+export function ListDeadLetters(arg1:number):Promise<Array<main.WebhookDeadLetterView>>;
+
 export function ListEvents(arg1:number,arg2:number):Promise<Array<main.EventView>>;
 
 export function Logout(arg1:string):Promise<void>;
 
 export function NowBJ():Promise<string>;
+
+export function RetryDeadLetter(arg1:number):Promise<void>;
 
 export function SaveSettings(arg1:string,arg2:string):Promise<model.Settings>;
 

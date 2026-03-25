@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -26,6 +25,7 @@ type App struct {
 	store   *store.Store
 	client  *ilink.Client
 	pollers *worker.PollerManager
+	webhooks *worker.WebhookDispatcher
 	server  *http.Server
 	runtime *runtimeState
 	svc     *service
@@ -46,13 +46,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		runtime: runtime,
 	}
 	pollers := worker.NewPollerManager(st, client, logger, svc.HandleInboundMessage)
+	webhooks := worker.NewWebhookDispatcher(st, runtime.Settings, logger)
 	svc.pollers = pollers
+	svc.webhooks = webhooks
 	api := httpapi.NewServer(&service{
 		cfg:     cfg,
 		logger:  logger,
 		store:   st,
 		client:  client,
 		pollers: pollers,
+		webhooks: webhooks,
 		runtime: runtime,
 	}, logger)
 
@@ -62,6 +65,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		store:   st,
 		client:  client,
 		pollers: pollers,
+		webhooks: webhooks,
 		runtime: runtime,
 		svc:     svc,
 		server: &http.Server{
@@ -89,6 +93,7 @@ func (a *App) StartBackground(ctx context.Context) error {
 	if err := a.pollers.StartEnabledAccounts(ctx); err != nil {
 		return err
 	}
+	a.webhooks.Start(ctx)
 
 	go func() {
 		a.logger.Info("http server listening", "addr", a.cfg.ListenAddr)
@@ -101,6 +106,7 @@ func (a *App) StartBackground(ctx context.Context) error {
 
 func (a *App) Shutdown() error {
 	a.pollers.StopAll()
+	a.webhooks.Stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -144,12 +150,21 @@ func (a *App) LogoutAccount(ctx context.Context, accountID string) error {
 	return a.svc.LogoutAccount(ctx, accountID)
 }
 
+func (a *App) ListDeadLetters(ctx context.Context, limit int) ([]model.WebhookDelivery, error) {
+	return a.svc.ListDeadLetters(ctx, limit)
+}
+
+func (a *App) RetryDeadLetter(ctx context.Context, id int64) error {
+	return a.svc.RetryDeadLetter(ctx, id)
+}
+
 type service struct {
 	cfg     config.Config
 	logger  *slog.Logger
 	store   *store.Store
 	client  *ilink.Client
 	pollers *worker.PollerManager
+	webhooks *worker.WebhookDispatcher
 	runtime *runtimeState
 }
 
@@ -225,6 +240,10 @@ func (s *service) ListLogs(ctx context.Context, afterID int64, limit int) ([]mod
 	return s.store.ListLogs(ctx, afterID, limit)
 }
 
+func (s *service) ListDeadLetters(ctx context.Context, limit int) ([]model.WebhookDelivery, error) {
+	return s.store.ListDeadWebhookDeliveries(ctx, limit)
+}
+
 func (s *service) GetSettings(ctx context.Context) (model.Settings, error) {
 	_ = ctx
 	return s.runtime.Settings(), nil
@@ -249,6 +268,17 @@ func (s *service) LogoutAccount(ctx context.Context, accountID string) error {
 		return err
 	}
 	_ = s.store.AddLog(context.Background(), "INFO", "account disconnected locally", "account", fmt.Sprintf(`{"account_id":%q}`, accountID))
+	return nil
+}
+
+func (s *service) RetryDeadLetter(ctx context.Context, id int64) error {
+	if err := s.store.RetryDeadWebhookDelivery(ctx, id); err != nil {
+		return err
+	}
+	if s.webhooks != nil {
+		s.webhooks.Wakeup()
+	}
+	_ = s.store.AddLog(context.Background(), "INFO", "dead webhook delivery requeued", "webhook", fmt.Sprintf(`{"delivery_id":%d}`, id))
 	return nil
 }
 
@@ -280,11 +310,17 @@ func (s *service) SendText(ctx context.Context, accountID, toUserID, text, conte
 }
 
 func (s *service) HandleInboundMessage(ctx context.Context, account model.Account, msg ilink.WeixinMessage) error {
-	if err := s.store.SaveInboundMessage(ctx, account.AccountID, msg); err != nil {
+	event, inserted, err := s.store.SaveInboundMessage(ctx, account.AccountID, msg)
+	if err != nil {
 		return err
+	}
+	if !inserted {
+		return nil
 	}
 
 	payload, err := json.Marshal(map[string]any{
+		"event_id":       event.ID,
+		"event_type":     event.EventType,
 		"account_id":    account.AccountID,
 		"base_url":      account.BaseURL,
 		"from_user_id":  msg.FromUserID,
@@ -314,26 +350,11 @@ func (s *service) HandleInboundMessage(ctx context.Context, account model.Accoun
 		return s.store.AddLog(ctx, "INFO", fmt.Sprintf("inbound message from %s: %s", msg.FromUserID, text), "inbound", string(payload))
 	}
 
-	go s.deliverWebhook(settings.WebhookURL, payload)
+	if err := s.store.EnqueueWebhookDelivery(ctx, event, payload); err != nil {
+		return err
+	}
+	if s.webhooks != nil {
+		s.webhooks.Wakeup()
+	}
 	return s.store.AddLog(ctx, "INFO", "inbound message queued for webhook", "webhook", string(payload))
-}
-
-func (s *service) deliverWebhook(webhookURL string, payload []byte) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, webhookURL, bytes.NewReader(payload))
-	if err != nil {
-		_ = s.store.AddLog(context.Background(), "ERROR", "build webhook request failed", "webhook", err.Error())
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		_ = s.store.AddLog(context.Background(), "ERROR", "webhook delivery failed", "webhook", err.Error())
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_ = s.store.AddLog(context.Background(), "ERROR", fmt.Sprintf("webhook delivery failed with status %d", resp.StatusCode), "webhook", "")
-		return
-	}
-	_ = s.store.AddLog(context.Background(), "INFO", "webhook delivered", "webhook", "")
 }

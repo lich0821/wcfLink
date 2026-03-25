@@ -134,7 +134,7 @@ func (m *PollerManager) run(ctx context.Context, account model.Account) {
 				continue
 			}
 			if m.onMsg == nil {
-				if err := m.store.SaveInboundMessage(context.Background(), current.AccountID, msg); err != nil {
+				if _, _, err := m.store.SaveInboundMessage(context.Background(), current.AccountID, msg); err != nil {
 					log.Error("save inbound event failed", "err", err, "message_id", msg.MessageID)
 				}
 				continue

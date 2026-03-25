@@ -9,6 +9,7 @@
 - 文本消息接收与落库
 - 文本消息发送
 - 回调地址配置
+- WebHook 重试与死信
 - 本地事件面板
 - 桌面端测试发送框
 - 本地 HTTP API
@@ -17,7 +18,6 @@
 当前仍未实现：
 
 - 图片、语音、视频、文件收发
-- WebHook 重试与死信
 - Pull 消费确认
 - 订阅推送编排
 
@@ -91,6 +91,7 @@ wails dev
 - 本地退出登录
 - 设置监听地址
 - 设置回调地址
+- 查看并手动重试 WebHook 死信
 - 查看事件流
 - 发送测试文本消息
 
@@ -169,9 +170,11 @@ go build -o ./bin/wcfLink ./cmd/wcfLink
 - `GET /api/accounts/login/qr`
 - `GET /api/accounts`
 - `GET /api/events`
+- `GET /api/webhooks/dead-letters`
 - `GET /api/settings`
 - `POST /api/settings`
 - `POST /api/messages/send-text`
+- `POST /api/webhooks/dead-letters/{id}/retry`
 
 ### 发送文本消息
 
