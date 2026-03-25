@@ -241,3 +241,7 @@ curl -s -X POST http://127.0.0.1:17890/api/messages/send-media \
 - 事件记录会保存媒体文件名、媒体类型和本地路径
 - 图片、视频、文件发送基于 `getuploadurl + CDN upload + sendmessage`
 - 语音接收已实现；语音发送不支持
+
+## FAQ
+mac 怎么过签名？
+sudo xattr -d com.apple.quarantine "/path/to/wcfLink.app"
